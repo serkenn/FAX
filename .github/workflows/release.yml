@@ -1,0 +1,106 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'   # v1.0.0, v2.1 など
+
+permissions:
+  contents: write
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # プラットフォーム別ビルド
+  # ────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            exe: wefax-decoder
+
+          - name: macos-arm64
+            os: macos-latest     # macOS 15, Apple Silicon
+            exe: wefax-decoder
+
+          - name: macos-x86_64
+            os: macos-13         # macOS 13 Ventura, Intel
+            exe: wefax-decoder
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 依存ライブラリ (OS別) ─────────────────────────────────────────────
+      - name: Install librtlsdr (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y librtlsdr-dev libusb-1.0-0-dev
+
+      - name: Install librtlsdr (macOS)
+        if: runner.os == 'macOS'
+        run: brew install librtlsdr
+
+      # ── Python 依存 ───────────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install pyinstaller numpy scipy Pillow pyrtlsdr
+
+      # ── PyInstaller でワンファイル実行ファイルに固める ────────────────────
+      - name: Build executable
+        run: |
+          pyinstaller \
+            --onefile \
+            --name "${{ matrix.exe }}" \
+            --collect-all scipy \
+            --collect-all PIL \
+            --hidden-import rtlsdr \
+            main.py
+
+      # ── zip にまとめて artifact としてアップロード ─────────────────────────
+      - name: Package
+        shell: bash
+        run: |
+          ARCHIVE="wefax-${{ matrix.name }}-${{ github.ref_name }}.zip"
+          cd dist
+          zip "../${ARCHIVE}" "${{ matrix.exe }}"
+          cd ..
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wefax-${{ matrix.name }}
+          path: ${{ env.ARCHIVE }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # GitHub Release の作成とファイルアップロード
+  # ────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 全プラットフォームの artifact を一箇所にまとめる
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "WEFAX Decoder ${{ github.ref_name }}" \
+            --generate-notes \
+            artifacts/wefax-*.zip

@@ -1,0 +1,4 @@
+pyrtlsdr>=0.2.93
+numpy>=1.24
+scipy>=1.11
+Pillow>=10.0
