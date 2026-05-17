@@ -21,11 +21,12 @@ jobs:
         include:
           - name: linux-x86_64
             os: ubuntu-22.04
-            exe: wefax-decoder
 
           - name: macos-arm64
             os: macos-latest     # macOS 15, Apple Silicon
-            exe: wefax-decoder
+
+          - name: windows-x86_64
+            os: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +35,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ── 依存ライブラリ (OS別) ─────────────────────────────────────────────
+      # ── 依存ライブラリ (OS 別) ────────────────────────────────────────────
       - name: Install librtlsdr (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -45,29 +46,77 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install librtlsdr
 
+      - name: Install librtlsdr (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # MSYS2 は GitHub Windows ランナーにプリインストール済み
+          C:/msys64/usr/bin/bash.exe -lc \
+            "pacman -Sy --noconfirm mingw-w64-x86_64-rtl-sdr"
+
       # ── Python 依存 ───────────────────────────────────────────────────────
       - name: Install Python dependencies
         run: pip install pyinstaller numpy scipy Pillow pyrtlsdr
 
-      # ── PyInstaller でワンファイル実行ファイルに固める ────────────────────
-      - name: Build executable
+      # ── ビルド (Linux / macOS) ────────────────────────────────────────────
+      - name: Build (Linux / macOS)
+        if: runner.os != 'Windows'
         run: |
           pyinstaller \
             --onefile \
-            --name "${{ matrix.exe }}" \
+            --name wefax-decoder \
             --collect-all scipy \
             --collect-all PIL \
             --hidden-import rtlsdr \
             main.py
 
+      # ── ビルド (Windows) ──────────────────────────────────────────────────
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          MINGW="C:/msys64/mingw64/bin"
+
+          # pyrtlsdr on Windows は rtlsdr.dll を探す (lib prefix なし)
+          cp "$MINGW/librtlsdr.dll" rtlsdr.dll
+          cp "$MINGW/libusb-1.0.dll" libusb-1.0.dll
+
+          # MinGW ランタイム DLL (存在する場合のみコピー)
+          for dll in libgcc_s_seh-1.dll libwinpthread-1.dll; do
+            [ -f "$MINGW/$dll" ] && cp "$MINGW/$dll" .
+          done
+
+          # --add-binary フラグを動的に組み立てる
+          BINS=""
+          for dll in rtlsdr.dll libusb-1.0.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+            [ -f "$dll" ] && BINS="$BINS --add-binary $dll;."
+          done
+
+          pyinstaller \
+            --onefile \
+            --name wefax-decoder \
+            --collect-all scipy \
+            --collect-all PIL \
+            --hidden-import rtlsdr \
+            --runtime-hook runtime_hook_rtlsdr.py \
+            $BINS \
+            main.py
+
       # ── zip にまとめて artifact としてアップロード ─────────────────────────
-      - name: Package
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           ARCHIVE="wefax-${{ matrix.name }}-${{ github.ref_name }}.zip"
-          cd dist
-          zip "../${ARCHIVE}" "${{ matrix.exe }}"
-          cd ..
+          cd dist && zip "../${ARCHIVE}" wefax-decoder
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ARCHIVE="wefax-${{ matrix.name }}-${{ github.ref_name }}.zip"
+          cd dist && 7z a "../${ARCHIVE}" wefax-decoder.exe
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
