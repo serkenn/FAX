@@ -27,10 +27,6 @@ jobs:
             os: macos-latest     # macOS 15, Apple Silicon
             exe: wefax-decoder
 
-          - name: macos-x86_64
-            os: macos-13         # macOS 13 Ventura, Intel
-            exe: wefax-decoder
-
     steps:
       - uses: actions/checkout@v4
 
